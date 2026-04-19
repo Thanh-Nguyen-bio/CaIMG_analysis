@@ -503,133 +503,110 @@ if j <= numCells
     set(findall(gcf, '-property', 'FontWeight'), 'FontWeight', 'normal');
 end
 
-%% 11. Autonomous Peak Analysis (Dynamic Tuning)
+%% 7. Autonomous Peak Analysis (Dynamic Tuning)
 disp('Running Autonomous Peak Analysis on Filtered Data...');
 
-% Initialize cell arrays
 hdr_pks = cell(numCells,1);
 hdr_locs = cell(numCells,1);
 
 for i = 1:numCells
-    % --- 1. SIGNAL SMOOTHING ---
-    % Signal is already smoothed globally in Section 5. 
+    % Signal is already smoothed globally in Section 2. 
     smooth_signal = df_ratio(i, :);
-    
-    % Extract post-injection window for peak finding
     signal_post = smooth_signal(marks(1):end); 
     time_post = timevec(marks(1):end);
     
-    % --- 2. DYNAMIC NOISE ESTIMATION ---
-    % Evaluate pre-injection baseline stability (Exclude failed washings)
+    % Evaluate pre-injection baseline stability
     baseline_check_idx = max(1, marks(1)-20);
     baseline_signal = smooth_signal(baseline_check_idx : marks(1)-1);
     
-    if mean(baseline_signal) < 1 % Exclude failed washings
-        
-        % Calculate robust noise (sigma) using Median Absolute Deviation (MAD)
+    if mean(baseline_signal) < 1 
+        % Median Absolute Deviation (MAD)
         baseline_median = median(baseline_signal);
         robust_sigma = median(abs(baseline_signal - baseline_median)) / 0.6745;
-        robust_sigma = max(robust_sigma, 0.01); % Prevent sigma from being exactly 0
+        robust_sigma = max(robust_sigma, 0.01); 
         
-        % --- 3. DYNAMIC PARAMETER TUNING ---
-        % Peak must stand out from its local surroundings by 2x the noise floor
-        dyn_prom = max(0.2, 1.5 * robust_sigma); 
-        
-        % Peak must reach an absolute height of at least 1x the noise floor above 0
-        dyn_height = max(0.2, 1 * robust_sigma); 
-        
-        % Minimum peak width (in minutes). 
+        dyn_prom = max(0.8, 1.5 * robust_sigma); 
+        dyn_height = max(0.3, 1 * robust_sigma); 
         dt_min = mean(diff(timevec)); 
-        dyn_width = dt_min * 13; % Must be at least ~x frames wide
-        
-        % --- 4. EXECUTE FINDPEAKS ---
+        dyn_width = dt_min * 30; 
+        dtance = 1;
         [pks_post, locs_post] = findpeaks(signal_post, time_post, ...
-            'MinPeakProminence', dyn_prom, ...
-            'MinPeakHeight', dyn_height, ...
-            'MinPeakWidth', dyn_width);
+            'MinPeakProminence', dyn_prom, 'MinPeakHeight', dyn_height, ...
+            'MinPeakWidth', dyn_width,'MinPeakDistance',dtance);
         
-        % --- 5. VISUALIZATION (Verification) ---
         figure(300+i); clf; set(gcf, 'Position', [150, 150, 1000, 600]);
         
-        % Subplot 1: Filtered Ratio Check
+        % Subplot 1: Filtered Raw Check
         subplot(2,1,1); hold on;
-        plot(time_post, roiMean_ratio(i, marks(1):end), 'k', 'LineWidth', 1.5); 
+        plot(time_post, roiMean_raw(i, marks(1):end), 'k', 'LineWidth', 1.5); 
         set(gca, 'xlim', timevec([marks(1) end]), 'TickDir', 'none');
-        title(sprintf('ROI %d: Filtered Ratio', i)); box off;
+        title(sprintf('ROI %d: Filtered Raw Signal', i)); box off;
         
         % Subplot 2: dF/F0 Peak Detection
         subplot(2,1,2); hold on;
-        plot(time_post, signal_post, 'r', 'LineWidth', 1.5); % Dark red smoothed dF/F0
+        plot(time_post, signal_post, 'r', 'LineWidth', 1.5); 
         
-        % Plot detected peaks
         if ~isempty(locs_post)
             plot(locs_post, pks_post + 0.35, 'kv', 'MarkerFaceColor', 'k', 'MarkerSize', 8, 'LineStyle', 'none');
         end
         
-        % Draw dynamic threshold line for visual reference
         yline(dyn_height, '--', 'Color', [0.5 0.5 0.5], 'Label', sprintf('Threshold: %.2f', dyn_height));
-        
         set(gca, 'xlim', timevec([marks(1) end]), 'ylim', [-1 max(10, max(signal_post)+2)], 'TickDir', 'none');
         title(sprintf('ROI %d: Autonomous Peak Detection (Prominence: %.2f)', i, dyn_prom)); box off;
         
-        set(findall(gcf, '-property', 'FontName'), 'FontName', 'Arial');
-        set(findall(gcf, '-property', 'FontWeight'), 'FontWeight', 'normal');
+        set(findall(gcf, '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
         
-        % Store entire peak array in one cell
-        hdr_pks{i} = pks_post;
-        hdr_locs{i} = locs_post;
+        hdr_pks{i} = pks_post; hdr_locs{i} = locs_post;
     else
-        % Excluded due to unstable baseline
-        hdr_pks{i} = [];
-        hdr_locs{i} = [];
+        hdr_pks{i} = []; hdr_locs{i} = [];
     end
 end
 
-%% 12. Aggregate Peak Statistics
+%% 8. Aggregate Peak Statistics
 disp('Calculating Peak Statistics...');
 peak_counts = cellfun(@numel, hdr_pks);
 peak_counts(peak_counts == 0) = NaN; 
 mean_oscil = mean(peak_counts, 1, 'omitnan');
 
 peak_ave = cellfun(@mean, hdr_pks);
-ave_amp = mean(peak_ave, 1,'omitmissing');
+ave_amp = mean(peak_ave, 1, 'omitnan');
 
-act_cell = sum(peak_counts > 0);
+act_cell = sum(peak_counts > 0, 'omitnan');
 per_act_cell = (act_cell / numCells) * 100;
 
-sem_amp  = std(peak_ave, 0, 1) / sqrt(act_cell);
+sem_amp  = std(peak_ave, 0, 1, 'omitnan') / sqrt(act_cell);
 sem_oscil  = std(peak_counts, 0, 1, 'omitnan') / sqrt(act_cell);
 
-%% 13. Analyze 1st Peaks vs Remaining Peaks & QC Graphing
-disp('Extracting 1st Peak Dynamics (Rise, Decay, Duration) and Generating QC Plots...');
-st_hdr_locs = zeros(numCells,1);
-st_hdr_pks = zeros(numCells,1);
-st_int = zeros(numCells,1);
-st_loss = zeros(numCells,1);
+
+%% 9. Analyze 1st Peaks vs Remaining Peaks & Comprehensive AUC (INTERACTIVE)
+disp('Extracting Peak Dynamics. Adjust Rectangles interactively for AUC accuracy...');
+st_hdr_locs = zeros(numCells,1); st_hdr_pks = zeros(numCells,1);
+st_int = zeros(numCells,1); st_loss = zeros(numCells,1);
+
+% --- Initialize New AUC Arrays ---
+auc_1st_peak   = nan(numCells, 1);
+auc_5min_post  = nan(numCells, 1);
+auc_all_peaks  = nan(numCells, 1);
 
 for k = 1:numCells
     if ~isempty(hdr_locs{k}) && ~isnan(hdr_locs{k}(1))
         
         st_hdr_locs(k) = hdr_locs{k}(1);
         st_hdr_pks(k)  = hdr_pks{k}(1);
-        
-        % Robustly find indices instead of using exact float == matches
         [~, peak_idx] = min(abs(timevec - st_hdr_locs(k)));
         
-        % --- 1. RISE DYNAMICS ---
+        % AUTODETECT RISE DYNAMICS
         pre_peak_signal = df_ratio(k, marks(1):peak_idx);
         st_int_bline = prctile(pre_peak_signal, 15);
-        
         idx_rise_start = find(pre_peak_signal <= st_int_bline, 1, 'last');
         if isempty(idx_rise_start), idx_rise_start = 1; end
         st_int(k) = timevec(marks(1) + idx_rise_start - 1);
         
-        % --- 2. DECAY DYNAMICS ---
+        % AUTODETECT DECAY DYNAMICS
         post_peak_signal = df_ratio(k, peak_idx:end);
-        
         if isempty(find(post_peak_signal <= 0.3, 1))
-            st_loss(k) = timevec(end); % Fallback to end of trace
-            decay_baseline = 0.3;      % Fallback baseline
+            st_loss(k) = timevec(end); 
+            decay_baseline = 0.3;      
         else
             if length(hdr_pks{k}) == 1
                 decay_baseline = prctile(post_peak_signal, 15);
@@ -646,87 +623,111 @@ for k = 1:numCells
             end
         end
         
-        % --- 3. QC GRAPH: 1st Peak Dynamics ---
-        figure(400+k); clf;
-        set(gcf, 'Position', [200, 200, 1000, 500]);
-        hold on;
-        
-        % Plot the main trace (already filtered in Sec 5)
+        % ==========================================
+        % QC GRAPH & INTERACTIVE ADJUSTMENT
+        % ==========================================
+        figQC = figure(400+k); clf; set(figQC, 'Position', [200, 200, 1000, 500]); hold on;
         plot(timevec, df_ratio(k,:), '-k', 'LineWidth', 1.5);
-        
-        % Plot all detected peaks for this cell
         plot(hdr_locs{k}, hdr_pks{k} + 0.3, 'rv', 'MarkerFaceColor', 'r', 'LineStyle', 'none');
         
-        % Draw Rectangle for Rise Phase (Yellow)
+        % Interactive DrawRectangles
         rise_w = max(0.01, st_hdr_locs(k) - st_int(k));
         rise_h = max(0.01, st_hdr_pks(k) + 0.35 - st_int_bline);
-        rectangle('Position', [st_int(k), st_int_bline, rise_w, rise_h], ...
-            'FaceColor', 'y', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+        rect_rise = drawrectangle('Position', [st_int(k), st_int_bline, rise_w, rise_h], ...
+                                  'Color', 'y', 'FaceAlpha', 0.5);
             
-        % Draw Rectangle for Decay Phase (Magenta)
         decay_w = max(0.01, st_loss(k) - st_hdr_locs(k));
         decay_h = max(0.01, st_hdr_pks(k) + 0.35 - decay_baseline);
-        rectangle('Position', [st_hdr_locs(k), decay_baseline, decay_w, decay_h], ...
-            'FaceColor', 'm', 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+        rect_decay = drawrectangle('Position', [st_hdr_locs(k), decay_baseline, decay_w, decay_h], ...
+                                   'Color', 'm', 'FaceAlpha', 0.5);
         
-        % Formatting
-        ylabel('\DeltaF/F_0');
-        xlabel('Time (min.)');
-        title({'', sprintf('1st Peak Dynamics QC: ROI %d (Filtered)', k), ''});
-        
-        % Dynamic Y-lim to ensure large peaks don't get cut off
+        ylabel('\DeltaF/F_0'); xlabel('Time (min.)');
+        title({'', sprintf('ROI %d: Adjust Left edge of Yellow for Start, Right edge of Magenta for End', k), ''});
         y_max = max(10, max(df_ratio(k,:)) + 1);
-        set(gca, 'xlim', timevec([1 end]), 'ylim', [-0.8 y_max], 'TickDir', 'none');
-        box off;
-        
-        % Injection marker
+        set(gca, 'xlim', timevec([1 end]), 'ylim', [-0.8 y_max], 'TickDir', 'none'); box off;
         xline(timevec(marks(1)), '--b', evnt, 'FontWeight', 'bold', 'LineWidth', 1.5);
+        set(findall(figQC, '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
         
-        % Apply Arial and Normal Font Weight globally
-        set(findall(gcf, '-property', 'FontName'), 'FontName', 'Arial');
-        set(findall(gcf, '-property', 'FontWeight'), 'FontWeight', 'normal');
+        % Add Confirm Button to Pause execution
+        btn_confirm = uicontrol('Parent', figQC, 'Style', 'pushbutton', 'String', 'Confirm & Next', ...
+                                'Position', [20 20 120 40], 'FontSize', 10, 'FontWeight', 'bold', ...
+                                'Callback', 'uiresume(gcbf)');
         
-        hold off;
+        disp(['Waiting for user to adjust ROI ', num2str(k), ' boundaries...']);
+        uiwait(figQC);
+        
+        % Extract New User-Adjusted Boundaries
+        if isvalid(figQC)
+            if isvalid(rect_rise)
+                pos_rise = rect_rise.Position;
+                st_int(k) = pos_rise(1); % New Start Time (Left Edge)
+            end
+            if isvalid(rect_decay)
+                pos_decay = rect_decay.Position;
+                st_loss(k) = pos_decay(1) + pos_decay(3); % New End Time (Left Edge + Width)
+            end
+            delete(btn_confirm); % Cleanup button so graph is clean
+            hold off;
+        end
+
+        % ==========================================
+        % --- CALCULATE AUC METRICS AFTER CONFIRM ---
+        % ==========================================
+        [~, idx_start_1st] = min(abs(timevec - st_int(k)));
+        [~, idx_end_1st]   = min(abs(timevec - st_loss(k)));
+        
+        % 1. AUC of 1st Peak (Start to Loss)
+        time_1st = timevec(idx_start_1st:idx_end_1st);
+        sig_1st  = df_ratio(k, idx_start_1st:idx_end_1st);
+        auc_1st_peak(k) = trapz(time_1st, max(0, sig_1st - st_int_bline));
+        
+        % 2. AUC within 5 minutes after induced (detected by adjusted st_int)
+        [~, idx_5min] = min(abs(timevec - (st_int(k) + 5)));
+        idx_5min = min(idx_5min, length(timevec)); 
+        time_5min = timevec(idx_start_1st:idx_5min);
+        sig_5min  = df_ratio(k, idx_start_1st:idx_5min);
+        auc_5min_post(k) = trapz(time_5min, max(0, sig_5min - st_int_bline));
     end
+    
+    % 3. AUC of ALL peaks at all time
+    time_post = timevec(marks(1):end);
+    sig_post  = df_ratio(k, marks(1):end);
+    auc_all_peaks(k) = trapz(time_post, max(0, sig_post));
 end
 
-st_hdr_pks(st_hdr_pks == 0) = NaN;
-st_hdr_locs(st_hdr_locs == 0) = NaN;
-st_int(st_int == 0) = NaN;
-st_loss(st_loss == 0) = NaN;
+st_hdr_pks(st_hdr_pks == 0) = NaN; st_hdr_locs(st_hdr_locs == 0) = NaN;
+st_int(st_int == 0) = NaN; st_loss(st_loss == 0) = NaN;
 
-st_amp = mean(st_hdr_pks, 'omitnan');
-st_loc = mean(st_hdr_locs, 'omitnan');
-
+st_amp = mean(st_hdr_pks, 'omitnan'); st_loc = mean(st_hdr_locs, 'omitnan');
 st_raise = st_hdr_locs - st_int;
 st_decay = st_loss - st_hdr_locs;
 st_dur = st_loss - st_int;
 
-disp('Completed 1st peaks dynamics and generated QC plots.');
+% --- Aggregate Mean AUCs ---
+mean_auc_1st  = mean(auc_1st_peak, 'omitnan');
+mean_auc_5min = mean(auc_5min_post, 'omitnan');
+mean_auc_all  = mean(auc_all_peaks, 'omitnan');
 
-% --- Remaining Peaks ---
-rest_locs = cell(numCells,1);
-rest_pks = cell(numCells, 1);
+disp('--- Comprehensive AUC Metrics ---');
+disp(['-> Mean 1st Peak AUC: ', num2str(mean_auc_1st)]);
+disp(['-> Mean AUC (5 mins post-induction): ', num2str(mean_auc_5min)]);
+disp(['-> Mean Total AUC (All peaks): ', num2str(mean_auc_all)]);
+
+% Remaining Peaks
+rest_locs = cell(numCells,1); rest_pks = cell(numCells, 1);
 for l = 1:numCells
     if length(hdr_locs{l}) > 1
-        rest_locs{l} = hdr_locs{l}(2:end);
-        rest_pks{l}  = hdr_pks{l}(2:end);
+        rest_locs{l} = hdr_locs{l}(2:end); rest_pks{l}  = hdr_pks{l}(2:end);
     end
 end
-rest_cnt_osc = cellfun(@numel, rest_pks);
-rest_cnt_osc(rest_cnt_osc == 0) = NaN;
+rest_cnt_osc = cellfun(@numel, rest_pks); rest_cnt_osc(rest_cnt_osc == 0) = NaN;
 rest_cnt_amp = cellfun(@mean, rest_pks);
 
-%% 14. Intracellular Calcium Dynamics (Thapsigargin, SOCE, VOCC)
+%% 10. Intracellular Calcium Dynamics (Thapsigargin, SOCE, VOCC)
 disp('--- ER Depletion (Thapsigargin) AUC ---');
-
-% Bring the Mean dF/F0 graph to the front for interaction
 figure(4); 
 disp('Click TWO points on the Mean dF/F0 graph to define the ER depletion window...');
-[x_er, ~] = ginput(2); 
-x_er = sort(x_er); % Ensure chronological order regardless of click order
-
-% Map clicked time (min) to exact timevec indices
+[x_er, ~] = ginput(2); x_er = sort(x_er); 
 [~, ER_start] = min(abs(timevec - x_er(1)));
 [~, ER_end]   = min(abs(timevec - x_er(2)));
 
@@ -735,71 +736,53 @@ timevec_thap = timevec(ER_start:ER_end);
 
 figure(14); clf; set(gcf, 'Position', [250, 250, 800, 400]);
 plot(timevec_thap, df_thap);
-title({'ER Depletion Window (Thapsigargin)', ''});
-xlabel('Time (min.)'); ylabel('\DeltaF/F_0');
-set(gca, 'xlim', timevec([ER_start ER_end]), 'TickDir', 'none');
-box off;
+title({'ER Depletion Window (Thapsigargin)', ''}); xlabel('Time (min.)'); ylabel('\DeltaF/F_0');
+set(gca, 'xlim', timevec([ER_start ER_end]), 'TickDir', 'none'); box off;
 
-auc_er = nan(numCells, 1); % Preallocate AUC array with NaNs
+auc_er = nan(numCells, 1); 
 for i = 1:numCells
-    % findpeaks returns empty [], not NaN, if no peaks are found
     [~, tg_locs] = findpeaks(df_thap(i, :), 'MinPeakProminence', 1);
-    
     if ~isempty(tg_locs)
-        % Find where signal crosses 0 before the first peak
         tg_int = find(df_thap(i, 1:tg_locs(1)) <= 0, 1, 'last');
-        if isempty(tg_int)
-            tg_int = 1; % Failsafe if it never dropped below 0
-        end
-        
-        % Calculate true Area Under Curve using exact time (minutes)
+        if isempty(tg_int), tg_int = 1; end
         auc_er(i) = trapz(timevec_thap(tg_int:end), df_thap(i, tg_int:end));
     end    
 end
 
-figure(15); clf;
-bar(auc_er, 'FaceColor', [0.2 0.6 0.8], 'EdgeColor', 'none');
-title({'Thapsigargin AUC per ROI', ''});
-xlabel('ROI Number'); ylabel('AUC (\DeltaF/F_0 \times min)');
-box off;
-
+figure(15); clf; bar(auc_er, 'FaceColor', [0.2 0.6 0.8], 'EdgeColor', 'none');
+title({'Thapsigargin AUC per ROI', ''}); xlabel('ROI Number'); ylabel('AUC (\DeltaF/F_0 \times min)'); box off;
 auc_er_mean = mean(auc_er, 'omitnan');
 disp(['-> Mean Thapsigargin AUC: ', num2str(auc_er_mean)]);
-
-% Apply formatting
 set(findall(figure(14), '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
 set(findall(figure(15), '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
-
-
-%% --- SOCE Slope ---
+%% SOCE Slope
 disp('--- SOCE Slope ---');
-figure(4);
-disp('Click TWO points on the Mean dF/F0 graph to define the SOCE slope window...');
-[x_soce, ~] = ginput(2);
-x_soce = sort(x_soce);
-
+figure(4); disp('Click TWO points on the Mean dF/F0 graph to define the SOCE slope window...');
+[x_soce, ~] = ginput(2); x_soce = sort(x_soce);
 [~, SOCE_start] = min(abs(timevec - x_soce(1)));
 [~, SOCE_end]   = min(abs(timevec - x_soce(2)));
-
 df_slpe = df_ratio(:, SOCE_end) - df_ratio(:, SOCE_start);
 timevec_slpe = timevec(SOCE_end) - timevec(SOCE_start);
-
-soce_slope = df_slpe ./ timevec_slpe; % Delta Y / Delta X
+soce_slope = df_slpe ./ timevec_slpe; 
 soce_slope_mean = mean(soce_slope, 'omitnan');
 disp(['-> Mean SOCE Slope: ', num2str(soce_slope_mean)]);
 
+disp('--- VOCC + SOCE AUC (3-Minute Window) ---');
+figure(4); 
+disp('Click ONE point on the Mean dF/F0 graph to define the START of the VOCC+SOCE window...');
+[x_voso, ~] = ginput(1); % Only requires 1 click now
 
-%% --- VOCC + SOCE AUC ---
-disp('--- VOCC + SOCE AUC ---');
-figure(4);
-disp('Click TWO points on the Mean dF/F0 graph to define the VOCC+SOCE window...');
-[x_voso, ~] = ginput(2);
-x_voso = sort(x_voso);
+% Find the closest frame index for the clicked start time
+[~, bg_voso] = min(abs(timevec - x_voso));
 
-[~, bg_voso] = min(abs(timevec - x_voso(1)));
-[~, end_voso] = min(abs(timevec - x_voso(2)));
+% Calculate the target end time (Start + 3 minutes)
+target_end_time = timevec(bg_voso) + 3;
 
-fprintf('-> Mapped Frame Indices: Start = %d, End = %d\n', bg_voso, end_voso);
+% Find the closest frame index for the 3-minute end mark 
+% (This automatically snaps to the last frame if 3 mins exceeds the recording length)
+[~, end_voso] = min(abs(timevec - target_end_time));
+
+fprintf('-> Mapped Frame Indices: Start = %d, End = %d (approx 3 mins)\n', bg_voso, end_voso);
 
 % Baseline correction based on the 20 frames right before the window
 baseline_voso_idx = max(1, bg_voso-20);
@@ -809,52 +792,37 @@ timevec_voso = timevec(bg_voso:end_voso);
 
 figure(16); clf; set(gcf, 'Position', [300, 300, 800, 400]);
 plot(timevec_voso, df_voso);
-title({'VOCC+SOCE Window (Baseline Corrected)', ''});
-xlabel('Time (min.)'); ylabel('\DeltaF/F_0');
-set(gca, 'xlim', timevec([bg_voso end_voso]), 'TickDir', 'none');
-box off;
+title({'VOCC+SOCE Window (Baseline Corrected, 3 Min)', ''}); xlabel('Time (min.)'); ylabel('\DeltaF/F_0');
+set(gca, 'xlim', timevec([bg_voso end_voso]), 'TickDir', 'none'); box off;
 
 % Calculate true Area Under Curve using exact time (minutes)
 auc_voso = trapz(timevec_voso, df_voso, 2);
 
-figure(17); clf;
-bar(auc_voso, 'FaceColor', [0.8 0.4 0.4], 'EdgeColor', 'none');
-title({'VOCC+SOCE AUC per ROI', ''});
-xlabel('ROI Number'); ylabel('AUC (\DeltaF/F_0 \times min)');
-box off;
+figure(17); clf; bar(auc_voso, 'FaceColor', [0.8 0.4 0.4], 'EdgeColor', 'none');
+title({'VOCC+SOCE AUC per ROI (3 Min Window)', ''}); xlabel('ROI Number'); ylabel('AUC (\DeltaF/F_0 \times min)'); box off;
 
-% Apply formatting
 set(findall(figure(16), '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
 set(findall(figure(17), '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
 
-
-%% 15. Memory Cleanup and Save
-disp('Purging heavy image arrays and temporary variables to save memory...');
-
-% 1. Delete the massive 3D image arrays and UI coordinate grids
-clear M2_gcam M2_red aveMap X_grid Y_grid ax fig1 fig2 fig3 fig4 roi_objs mask curr_pixels;
-clear tmp_g tmp_r vals_g vals_r all_pixel_idx all_cell_ids img_desc tiff_info;
-
-% 2. Delete loop indices, UI handles, and raw metadata string tokens
-clear c cx cy rad timei i j k l roi_tokens time_str time_tokens btn_add btn_done;
-
-% 3. Delete plotting boundary calculations
-clear t_start t_end y_max y_min y_range bar_y text_y plot_ymin plot_ymax;
-clear y_max_all y_min_all y_range_all bar_y_all text_y_all valid_idx;
-
-% 4. Delete intermediate baseline and peak finding thresholds
-clear baseline_start baseline_end F0_ratio smooth_signal signal_post time_post;
-clear baseline_check_idx baseline_signal baseline_median robust_sigma;
+%% 11. Memory Cleanup and Save
+disp('Purging temporary variables to save memory...');
+% Clean up tables, loop indices, string tokens, and graphing boundaries
+clear dataTbl timevec_raw timevec_sec timeColIdx fluorColsIdx;
+clear c cx cy rad timei i j k l;
+%clear t_start t_end y_max y_min y_range bar_y text_y plot_ymin plot_ymax;
+%clear y_max_all y_min_all y_range_all bar_y_all text_y_all valid_idx;
+%clear baseline_start baseline_end F0_raw smooth_signal signal_post time_post;
+%clear baseline_check_idx baseline_signal baseline_median robust_sigma;
 clear dyn_prom dyn_height dt_min dyn_width pks_post locs_post;
-
-% 5. Delete intermediate peak dynamics and graphing variables
 clear peak_idx pre_peak_signal st_int_bline idx_rise_start post_peak_signal;
 clear decay_baseline idx_decay_end st_nd_dy peak2_idx rise_w rise_h decay_w decay_h;
-
-% 6. Delete temporary AUC selection and mapping variables
 clear x_er x_soce x_voso ER_start ER_end SOCE_start SOCE_end bg_voso end_voso;
 clear baseline_voso_idx baseline_voso tg_locs tg_int df_thap timevec_thap;
 clear df_slpe timevec_slpe df_voso timevec_voso;
+
+% Purge temporary AUC loop variables
+clear time_1st sig_1st time_5min sig_5min sig_post idx_start_1st idx_end_1st idx_5min;
+clear rect_rise rect_decay pos_rise pos_decay btn_confirm figQC;
 
 disp('Saving lightweight analysis workspace...');
 [~, base_name_green, ~] = fileparts(file_name_green);
@@ -868,5 +836,5 @@ disp(['SUCCESS! Analysis saved as: ', datFileName]);
 disp('Pipeline Complete.');
 
 
-%% 
+%%
 close all, clear, clc
