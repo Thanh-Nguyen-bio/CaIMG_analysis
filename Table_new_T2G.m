@@ -60,8 +60,8 @@ nROIs = numCells;
 
 %% Define Event
 %evnt = {'1mM CuSO_{4}'};
-%evnt = {'20 \muM Thap'};
-evnt = {'Akh 10 ng'};
+evnt = {'20 \muM Thap'};
+%evnt = {'Akh 10 ng'};
 disp(['Successfully loaded ', num2str(numCells), ' ROIs over ', num2str(length(timevec)), ' timepoints.']);
 
 %% 2. Calculate Ratio, dF/F0, and Apply Savitzky-Golay Filter
@@ -158,8 +158,8 @@ text(t_start + (t_end - t_start)/2, bar_y + (0.02 * y_range), evnt, ...
     'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom', 'FontSize', 14);
 set(findall(gcf, '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
 
+%% 4. Visualization: Normalized GCaMP/TdTomato  
 figure(2); clf; set(gcf, 'Position', [100, 100, 1200, 800]);
-
 % --- Heatmap ---
 subplot(2,1,1);
 surf(timevec, linspace(0.5,0.5+numCells,numCells), roiMean_raw, 'LineStyle', 'none'); view(2);
@@ -170,7 +170,6 @@ box off;
 xline(t_start, '--w', 'LineWidth', 1); 
 text(t_start, 0, evnt, 'HorizontalAlignment', 'left', 'VerticalAlignment', 'bottom', 'FontSize', 12, 'Color', 'k');
 
-%% 4. Visualization: Normalized GCaMP/TdTomato  
 % --- All Traces ---
 subplot(2,1,2);
 plot(timevec, roiMean_raw); axis tight;
@@ -344,7 +343,7 @@ for i = 1:numCells
     end
 end
 
-%% 10. Aggregate Peak Statistics
+%% Aggregate Peak Statistics
 disp('Calculating Peak Statistics...');
 peak_counts = cellfun(@numel, hdr_pks);
 peak_counts(peak_counts == 0) = NaN; 
@@ -360,7 +359,7 @@ sem_amp  = std(peak_ave, 0, 1, 'omitnan') / sqrt(act_cell);
 sem_oscil  = std(peak_counts, 0, 1, 'omitnan') / sqrt(act_cell);
 
 
-%% 11. Analyze 1st Peaks vs Remaining Peaks & Comprehensive AUC (INTERACTIVE)
+%% 10. Analyze 1st Peaks vs Remaining Peaks & Comprehensive AUC (INTERACTIVE)
 disp('Extracting Peak Dynamics. Adjust Rectangles interactively for AUC accuracy...');
 st_hdr_locs = zeros(numCells,1); st_hdr_pks = zeros(numCells,1);
 st_int = zeros(numCells,1); st_loss = zeros(numCells,1);
@@ -505,7 +504,7 @@ end
 rest_cnt_osc = cellfun(@numel, rest_pks); rest_cnt_osc(rest_cnt_osc == 0) = NaN;
 rest_cnt_amp = cellfun(@mean, rest_pks);
 
-%% 12. Intracellular Calcium Dynamics (Thapsigargin, SOCE, VOCC)
+%% 11. Intracellular Calcium Dynamics (Thapsigargin, SOCE, VOCC)
 disp('--- ER Depletion (Thapsigargin) AUC ---');
 figure(3); 
 disp('Click TWO points on the Mean dF/F0 graph to define the ER depletion window...');
@@ -537,57 +536,198 @@ auc_er_mean = mean(auc_er, 'omitnan');
 disp(['-> Mean Thapsigargin AUC: ', num2str(auc_er_mean)]);
 set(findall(figure(14), '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
 set(findall(figure(15), '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
-%% 13.SOCE Slope
-disp('--- SOCE Slope ---');
-figure(3); disp('Click TWO points on the Mean dF/F0 graph to define the SOCE slope window...');
-[x_soce, ~] = ginput(2); x_soce = sort(x_soce);
-[~, SOCE_start] = min(abs(timevec - x_soce(1)));
-[~, SOCE_end]   = min(abs(timevec - x_soce(2)));
-df_slpe = df_ratio(:, SOCE_end) - df_ratio(:, SOCE_start);
-timevec_slpe = timevec(SOCE_end) - timevec(SOCE_start);
-soce_slope = df_slpe ./ timevec_slpe; 
-soce_slope_mean = mean(soce_slope, 'omitnan');
-disp(['-> Mean SOCE Slope: ', num2str(soce_slope_mean)]);
 
-disp('--- VOCC + SOCE AUC (3-Minute Window) ---');
+%%  12.--- SOCE Slope (Autonomous Max Slope Detection) ---
+disp('--- SOCE Slope ---');
 figure(3); 
-disp('Click ONE point on the Mean dF/F0 graph to define the START of the VOCC+SOCE window...');
-[x_voso, ~] = ginput(1); % Only requires 1 click now
+disp('Click ONE point on the Mean dF/F0 graph to define the START of the SOCE induction...');
+[x_soce, ~] = ginput(1);
 
 % Find the closest frame index for the clicked start time
-[~, bg_voso] = min(abs(timevec - x_voso));
+[~, SOCE_start] = min(abs(timevec - x_soce));
 
-% Calculate the target end time (Start + 3 minutes)
-target_end_time = timevec(bg_voso) + 3;
+% Define a search window (e.g., 5 minutes) to look for the maximum slope
+% (Adjust this value if your rise phase takes longer to reach the plateau)
+search_duration = 5; 
+[~, SOCE_end] = min(abs(timevec - (x_soce + search_duration)));
 
-% Find the closest frame index for the 3-minute end mark 
-% (This automatically snaps to the last frame if 3 mins exceeds the recording length)
-[~, end_voso] = min(abs(timevec - target_end_time));
+timevec_search = timevec(SOCE_start:SOCE_end);
+dt = mean(diff(timevec_search)); % Average time step in minutes
 
-fprintf('-> Mapped Frame Indices: Start = %d, End = %d (approx 3 mins)\n', bg_voso, end_voso);
+soce_slope = zeros(numCells, 1);
+max_slope_idx = zeros(numCells, 1);
 
-% Baseline correction based on the 20 frames right before the window
-baseline_voso_idx = max(1, bg_voso-20);
-baseline_voso = mean(df_ratio(:, baseline_voso_idx:bg_voso-1), 2);
-df_voso = df_ratio(:, bg_voso:end_voso) - baseline_voso;
-timevec_voso = timevec(bg_voso:end_voso);
+% Prepare QC Figure
+figure(18); clf; set(gcf, 'Position', [350, 350, 1000, 600]); hold on;
+title({'Autonomous SOCE Slope Detection', 'Black lines indicate the point of maximum steepness for each ROI'}); 
+xlabel('Time (min.)'); ylabel('\DeltaF/F_0');
+colors = lines(numCells);
 
-figure(16); clf; set(gcf, 'Position', [300, 300, 800, 400]);
-plot(timevec_voso, df_voso);
-title({'VOCC+SOCE Window (Baseline Corrected, 3 Min)', ''}); xlabel('Time (min.)'); ylabel('\DeltaF/F_0');
-set(gca, 'xlim', timevec([bg_voso end_voso]), 'TickDir', 'none'); box off;
+for i = 1:numCells
+    signal_search = df_ratio(i, SOCE_start:SOCE_end);
+    
+    % Calculate the derivative (rate of change: dF/dt)
+    % Using 'gradient' provides a slightly smoother derivative than 'diff'
+    dF_dt = gradient(signal_search) ./ dt;
+    
+    % Find the maximum slope (steepest part of the rise)
+    [max_val, max_idx] = max(dF_dt);
+    
+    soce_slope(i) = max_val;
+    max_slope_idx(i) = max_idx;
+    
+    % --- Plotting for QC ---
+    plot(timevec_search, signal_search, 'Color', [colors(i,:) 0.6], 'LineWidth', 1.5);
+    
+    % Draw a tangent line at the exact point of maximum slope for visual confirmation
+    t_max = timevec_search(max_idx);
+    y_max = signal_search(max_idx);
+    
+    % Define a small line segment to represent the tangent visually
+    line_length = 0.1; % minutes
+    t_tangent = [t_max - line_length/2, t_max + line_length/2];
+    y_tangent = y_max + max_val * (t_tangent - t_max);
+    
+    plot(t_tangent, y_tangent, 'Color', 'k', 'LineWidth', 1.75);
+    plot(t_max, y_max, 'ko', 'MarkerFaceColor', 'w', 'MarkerSize', 4); 
+end
 
-% Calculate true Area Under Curve using exact time (minutes)
-auc_voso = trapz(timevec_voso, df_voso, 2);
+set(gca, 'xlim', timevec([SOCE_start SOCE_end]), 'TickDir', 'none'); box off;
+set(findall(gcf, '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
+hold off;
 
-figure(17); clf; bar(auc_voso, 'FaceColor', [0.8 0.4 0.4], 'EdgeColor', 'none');
-title({'VOCC+SOCE AUC per ROI (3 Min Window)', ''}); xlabel('ROI Number'); ylabel('AUC (\DeltaF/F_0 \times min)'); box off;
+soce_slope_mean = mean(soce_slope, 'omitnan');
+disp(['-> Mean Autonomous SOCE Slope: ', num2str(soce_slope_mean)]);
 
+% Generate Bar Chart
+figure(19); clf; bar(soce_slope, 'FaceColor', [0.4 0.8 0.4], 'EdgeColor', 'none');
+title({'Maximum SOCE Slope per ROI', ''}); 
+xlabel('ROI Number'); ylabel('Max Slope (\DeltaF/F_0 / min)'); box off;
+set(findall(gcf, '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
+%% --- VOCC + SOCE AUC (Autonomous 3-Metrics) ---
+disp('--- VOCC + SOCE AUC ---');
+disp('Autonomously detecting true onset and saturation points using the previous click...');
+
+% Preallocate arrays for the three different AUC calculations
+auc_selected_3min = nan(numCells, 1);
+auc_onset_3min    = nan(numCells, 1);
+auc_onset_sat     = nan(numCells, 1);
+
+% Arrays to store the autonomously found indices for QC graphing
+all_onset_idx = ones(numCells, 1);
+all_sat_idx   = ones(numCells, 1);
+
+% Metric 1 End Index: 3 minutes after the globally selected point
+[~, selected_end_idx] = min(abs(timevec - (x_soce + 3)));
+
+for i = 1:numCells
+    % 1. DEFINE BASELINE
+    % Use 20 frames right before the globally clicked start time
+    if SOCE_start > 1
+        baseline_idx_start = max(1, SOCE_start - 20);
+        baseline_val = mean(df_ratio(i, baseline_idx_start : SOCE_start - 1));
+    else
+        baseline_val = df_ratio(i, 1);
+    end
+    
+    % --- METRIC 1: AUC in 3 mins from selected point ---
+    time_1 = timevec(SOCE_start : selected_end_idx);
+    sig_1  = df_ratio(i, SOCE_start : selected_end_idx) - baseline_val;
+    auc_selected_3min(i) = trapz(time_1, max(0, sig_1)); % max(0) prevents negative area from noise
+    
+    % 2. AUTODETECT ACTUAL RISING TIMEPOINT (ONSET)
+    % Convert relative max_slope_idx from the previous section to an absolute index
+    abs_max_idx = SOCE_start + max_slope_idx(i) - 1;
+    
+    % Step backward from the steepest slope until the signal hits the local baseline
+    idx_onset = abs_max_idx;
+    while idx_onset > SOCE_start && df_ratio(i, idx_onset) > baseline_val+0.05
+        idx_onset = idx_onset - 1;
+    end
+    all_onset_idx(i) = idx_onset;
+    
+    % --- METRIC 2: AUC in 3 mins from ACTUAL rising point ---
+    [~, idx_onset_3min] = min(abs(timevec - (timevec(idx_onset) + 3)));
+    idx_onset_3min = min(idx_onset_3min, length(timevec)); % Failsafe
+    
+    time_2 = timevec(idx_onset : idx_onset_3min);
+    sig_2  = df_ratio(i, idx_onset : idx_onset_3min) - baseline_val;
+    auc_onset_3min(i) = trapz(time_2, max(0, sig_2));
+    
+    % 3. AUTODETECT FIRST SATURATE TIMEPOINT (PLATEAU)
+    % Look forward from the steepest slope until the derivative drops to <= 0 (stops rising)
+    % Cap the search window at 2 minutes after the max slope to prevent runaway
+    search_sat_end = min(length(timevec), abs_max_idx + round(2 / mean(diff(timevec)))); 
+    dF_dt_forward = gradient(df_ratio(i, abs_max_idx : search_sat_end));
+    
+    stop_rising = find(dF_dt_forward <= 0, 1, 'first');
+    if isempty(stop_rising)
+        idx_sat = search_sat_end; % Fallback if it never perfectly plateaus
+    else
+        idx_sat = abs_max_idx + stop_rising - 1;
+    end
+    all_sat_idx(i) = idx_sat;
+    
+    % --- METRIC 3: AUC between Actual Rising and Saturation ---
+    time_3 = timevec(idx_onset : idx_sat);
+    sig_3  = df_ratio(i, idx_onset : idx_sat) - baseline_val;
+    auc_onset_sat(i) = trapz(time_3, max(0, sig_3));
+end
+
+%% --- Visualizations for VOCC + SOCE Metrics ---
+
+% QC FIGURE: Traces with Detected Onset & Saturation Markers
+figure(16); clf; set(gcf, 'Position', [200, 300, 1000, 500]); hold on;
+title({'VOCC+SOCE Dynamics (Baseline Corrected)', 'Triangles = Detected Onset (Rise) | Squares = Detected Saturation (Plateau)'}); 
+xlabel('Time (min.)'); ylabel('\DeltaF/F_0 (Baseline Subtracted)');
+
+colors = lines(numCells);
+plot_end = min(length(timevec), max(all_sat_idx) + round(2 / mean(diff(timevec)))); % 2 mins past last saturation
+
+for i = 1:numCells
+    baseline_val = mean(df_ratio(i, max(1, SOCE_start - 20) : max(1, SOCE_start - 1)));
+    
+    % Plot normalized trace
+    sig_plot = df_ratio(i, SOCE_start:plot_end) - baseline_val;
+    plot(timevec(SOCE_start:plot_end), sig_plot, 'Color', [colors(i,:) 0.5], 'LineWidth', 1);
+    
+    % Plot Onset Marker
+    t_on = timevec(all_onset_idx(i));
+    y_on = df_ratio(i, all_onset_idx(i)) - baseline_val;
+    plot(t_on, y_on, '^', 'MarkerEdgeColor', colors(i,:), 'MarkerFaceColor', 'w', 'MarkerSize', 6, 'LineWidth', 1);
+    
+    % Plot Saturation Marker
+    t_sat = timevec(all_sat_idx(i));
+    y_sat = df_ratio(i, all_sat_idx(i)) - baseline_val;
+    plot(t_sat, y_sat, 's', 'MarkerEdgeColor', colors(i,:), 'MarkerFaceColor', 'w', 'MarkerSize', 6, 'LineWidth', 1);
+end
+set(gca, 'xlim', timevec([SOCE_start, plot_end]), 'TickDir', 'none'); box off;
+
+% GROUPED BAR CHART: Comparing the 3 AUC Metrics
+figure(17); clf; set(gcf, 'Position', [400, 300, 900, 500]);
+bar_data = [auc_selected_3min, auc_onset_3min, auc_onset_sat];
+b = bar(bar_data, 'grouped', 'EdgeColor', 'none');
+
+% Style the grouped bars
+b(1).FaceColor = [0.7 0.7 0.7]; % Gray: Global 3 Min
+b(2).FaceColor = [0.2 0.6 0.8]; % Blue: Actual Rise 3 Min
+b(3).FaceColor = [0.8 0.3 0.3]; % Red: Rise to Saturation
+
+legend({'3 Min from Selected Point', '3 Min from Actual Rise', 'Between Rise & Saturation'}, 'Location', 'northwest');
+title({'VOCC+SOCE AUC Comparisons per ROI', ''}); 
+xlabel('ROI Number'); ylabel('AUC (\DeltaF/F_0 \times min)'); box off;
+
+% Apply Formatting
 set(findall(figure(16), '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
 set(findall(figure(17), '-property', 'FontName'), 'FontName', 'Arial', 'FontWeight', 'normal');
 
+% Console Summary
+disp(['-> Mean AUC (3 mins from Global Click): ', num2str(mean(auc_selected_3min, 'omitnan'))]);
+disp(['-> Mean AUC (3 mins from Actual Rise):  ', num2str(mean(auc_onset_3min, 'omitnan'))]);
+disp(['-> Mean AUC (Actual Rise to Saturation): ', num2str(mean(auc_onset_sat, 'omitnan'))]);
 
-%% 14. Find the trace closest to the MEDIAN
+
+%% 13. Find the trace closest to the MEDIAN
 % Calculate the median value across all ROIs at each time point
 % Assuming your matrix is named 'traces' 
 % (Rows = ROIs, Columns = Time points)
@@ -603,7 +743,7 @@ distancesToMedian = sum((traces - theoreticalMedianTrace).^2, 2);
 % Extract the actual ROI trace closest to the median
 medianTraceROI = traces(closestMedianIdx, :);
 
-%% 2. Find the trace closest to the MODE
+%% 14. Find the trace closest to the MODE
 % Calculate the mode across all ROIs at each time point
 % Note: If your data is highly continuous, you may need to round it slightly 
 % first (e.g., mode(round(traces, 2), 1)) for 'mode' to find meaningful overlaps.
@@ -635,25 +775,37 @@ legend('Location', 'best');
 xlabel('Time points');
 ylabel('\DeltaF/F_0');
 title('Representative Traces');
-%% 14. Memory Cleanup and Save
-disp('Purging temporary variables to save memory...');
-% Clean up tables, loop indices, string tokens, and graphing boundaries
+%% 15. Memory Cleanup and Save
+disp('Purging temporary buffered variables to save memory...');
+
+% 1. Clean up Initial Loading & Base Metric Loop Indices
 clear dataTbl timevec_raw timevec_sec timeColIdx fluorColsIdx;
 clear c cx cy rad timei i j k l;
 %clear t_start t_end y_max y_min y_range bar_y text_y plot_ymin plot_ymax;
 %clear y_max_all y_min_all y_range_all bar_y_all text_y_all valid_idx;
-%clear baseline_start baseline_end F0_raw smooth_signal signal_post time_post;
-%clear baseline_check_idx baseline_signal baseline_median robust_sigma;
+
+% 2. Clean up Peak Detection & Savitzky-Golay Buffers
+clear baseline_start baseline_end F0_raw smooth_signal signal_post time_post;
+clear baseline_check_idx baseline_signal baseline_median robust_sigma;
 clear dyn_prom dyn_height dt_min dyn_width pks_post locs_post;
 clear peak_idx pre_peak_signal st_int_bline idx_rise_start post_peak_signal;
 clear decay_baseline idx_decay_end st_nd_dy peak2_idx rise_w rise_h decay_w decay_h;
-clear x_er x_soce x_voso ER_start ER_end SOCE_start SOCE_end bg_voso end_voso;
-clear baseline_voso_idx baseline_voso tg_locs tg_int df_thap timevec_thap;
-clear df_slpe timevec_slpe df_voso timevec_voso;
-
-% Purge temporary AUC loop variables
-clear time_1st sig_1st time_5min sig_5min sig_post idx_start_1st idx_end_1st idx_5min;
 clear rect_rise rect_decay pos_rise pos_decay btn_confirm figQC;
+
+% 3. Clean up General AUC & Thapsigargin Variables
+clear x_er ER_start ER_end df_thap timevec_thap tg_locs tg_int;
+clear time_1st sig_1st time_5min sig_5min sig_post idx_start_1st idx_end_1st idx_5min;
+
+% 4. Clean up SOCE Slope Detection Buffers
+clear x_soce SOCE_start SOCE_end search_duration dt signal_search dF_dt;
+clear max_slope_idx max_val max_idx t_max y_max t_tangent y_tangent line_length colors;
+
+% 5. Clean up VOCC+SOCE Autonomous 3-Metric Buffers
+clear selected_end_idx baseline_idx_start baseline_val abs_max_idx;
+clear time_1 sig_1 idx_onset idx_onset_3min time_2 sig_2;
+clear search_sat_end dF_dt_forward stop_rising idx_sat time_3 sig_3;
+clear plot_end sig_plot t_on y_on t_sat y_sat bar_data b;
+clear all_onset_idx all_sat_idx;
 
 disp('Saving lightweight analysis workspace...');
 [~, base_name, ~] = fileparts(filename);
@@ -662,6 +814,7 @@ save(fullfile(filepath, datFileName), '-v7.3');
 
 disp(['SUCCESS! Analysis saved as: ', datFileName]);
 disp('Pipeline Complete.');
+
 
 %%
 close all, clear, clc
